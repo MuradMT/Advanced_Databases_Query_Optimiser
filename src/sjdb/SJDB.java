@@ -25,12 +25,12 @@ public class SJDB {
 		Operator plan = queryParser.parse();
 				
 		// create estimator visitor and apply it to canonical plan
-		//Estimator est = new Estimator();
-		//plan.accept(est);
+		Estimator est = new Estimator();
+		plan.accept(est);
 		
 		// create optimised plan
-		//Optimiser opt = new Optimiser(cat);
-		//Operator optPlan = opt.optimise(plan);
+		Optimiser opt = new Optimiser(cat);
+		Operator optPlan = opt.optimise(plan);
 	}
 
 }

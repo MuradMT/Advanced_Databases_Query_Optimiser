@@ -34,7 +34,6 @@ public class Test {
 		cat.createAttribute("B", "b1", 150);
 		cat.createAttribute("B", "b2", 100);
 		cat.createAttribute("B", "b3", 5);
-		
 		return cat;
 	}
 
