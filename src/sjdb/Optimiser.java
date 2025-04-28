@@ -3,14 +3,14 @@ package sjdb;
 import java.util.*;
 
 public class Optimiser {
-    public Optimiser(Catalogue catalogue) {
+    public Optimiser(Catalogue cat) {
     }
 
     public Operator optimise(Operator plan) {
-        List<Attribute> projectAttributes = null;
+        List<Attribute> topProjectAttributes = null;
         if (plan instanceof Project) {
             Project project = (Project) plan;
-            projectAttributes = project.getAttributes();
+            topProjectAttributes = project.getAttributes();
             plan = project.getInput();
         }
 
@@ -21,106 +21,113 @@ public class Optimiser {
             plan = select.getInput();
         }
 
-        List<Scan> scanOperators = new ArrayList<>();
-        collectScans(plan, scanOperators);
+        List<Scan> scans = new ArrayList<>();
+        collectScans(plan, scans);
 
-        Map<String, List<Predicate>> pushdownPredicates = new HashMap<>();
-        Map<RelationPair, Predicate> joinPredicates = new HashMap<>();
+        Map<String, List<Predicate>> selectionMap = new HashMap<>();
+        Map<RelationPair, Predicate> joinMap = new HashMap<>();
 
         for (Predicate predicate : allPredicates) {
             if (predicate.equalsValue()) {
-                String attributeName = predicate.getLeftAttribute().getName();
-                pushdownPredicates.computeIfAbsent(attributeName, key -> new ArrayList<>()).add(predicate);
+                String attrName = predicate.getLeftAttribute().getName();
+                selectionMap.computeIfAbsent(attrName, k -> new ArrayList<>()).add(predicate);
             } else {
-                String leftAttribute = predicate.getLeftAttribute().getName();
-                String rightAttribute = predicate.getRightAttribute().getName();
-                joinPredicates.put(new RelationPair(leftAttribute, rightAttribute), predicate);
+                String leftName = predicate.getLeftAttribute().getName();
+                String rightName = predicate.getRightAttribute().getName();
+                joinMap.put(new RelationPair(leftName, rightName), predicate);
             }
         }
 
         List<Operator> subPlans = new ArrayList<>();
-        for (Scan originalScan : scanOperators) {
-            Relation relation = originalScan.getRelation();
-            NamedRelation namedRelation = (NamedRelation) relation;
-            Operator currentOperator = new Scan(namedRelation);
+        for (Scan originalScan : scans) {
+            Relation rel = originalScan.getRelation();
+            NamedRelation namedRel = (NamedRelation) rel;
+            Operator subPlan = new Scan(namedRel);
 
-            for (Attribute attribute : currentOperator.getOutput().getAttributes()) {
-                List<Predicate> predicatesOnAttribute = pushdownPredicates.getOrDefault(attribute.getName(), Collections.emptyList());
-                for (Predicate predicate : predicatesOnAttribute) {
-                    currentOperator = new Select(currentOperator, predicate);
+            for (Attribute attr : subPlan.getOutput().getAttributes()) {
+                List<Predicate> selections = selectionMap.getOrDefault(attr.getName(), Collections.emptyList());
+                for (Predicate sel : selections) {
+                    subPlan = new Select(subPlan, sel);
                 }
             }
-            subPlans.add(currentOperator);
+            subPlans.add(subPlan);
         }
 
         Estimator estimator = new Estimator();
-        Operator currentPlan = null;
-        long bestTupleCount = Long.MAX_VALUE;
+        Operator current = null;
+        long bestSize = Long.MAX_VALUE;
         for (Operator candidate : subPlans) {
             candidate.accept(estimator);
-            long candidateTupleCount = estimator.getOutput().getTupleCount();
-            if (candidateTupleCount < bestTupleCount) {
-                bestTupleCount = candidateTupleCount;
-                currentPlan = candidate;
+            long size = estimator.getOutput().getTupleCount();
+            if (size < bestSize) {
+                bestSize = size;
+                current = candidate;
             }
         }
-        subPlans.remove(currentPlan);
+        subPlans.remove(current);
 
         while (!subPlans.isEmpty()) {
-            Operator bestNextPlan = null;
+            Operator bestPlan = null;
             Operator bestCandidate = null;
-            bestTupleCount = Long.MAX_VALUE;
+            bestSize = Long.MAX_VALUE;
 
             for (Operator candidate : subPlans) {
-                Predicate joinPredicate = findJoinPredicate(currentPlan, candidate, joinPredicates);
-                Operator trialPlan = (joinPredicate != null)
-                        ? new Join(currentPlan, candidate, joinPredicate)
-                        : new Product(currentPlan, candidate);
-                trialPlan.accept(estimator);
-                long trialTupleCount = estimator.getOutput().getTupleCount();
-                if (trialTupleCount < bestTupleCount) {
-                    bestTupleCount = trialTupleCount;
-                    bestNextPlan = trialPlan;
+                Predicate joinPredicate = findJoinPredicate(current, candidate, joinMap);
+                Operator trial = (joinPredicate != null) ? new Join(current, candidate, joinPredicate) : new Product(current, candidate);
+                trial.accept(estimator);
+                long size = estimator.getOutput().getTupleCount();
+                if (size < bestSize) {
+                    bestSize = size;
+                    bestPlan = trial;
                     bestCandidate = candidate;
                 }
             }
 
-            currentPlan = bestNextPlan;
+            current = bestPlan;
             subPlans.remove(bestCandidate);
         }
 
-        if (projectAttributes != null) {
-            currentPlan = new Project(currentPlan, projectAttributes);
+        if (topProjectAttributes != null) {
+            current = new Project(current, topProjectAttributes);
         }
-        return currentPlan;
+        return current;
     }
 
-    private void collectScans(Operator operator, List<Scan> scanList) {
+    private void collectScans(Operator operator, List<Scan> scans) {
         if (operator instanceof Scan) {
-            scanList.add((Scan) operator);
+            scans.add((Scan) operator);
         } else {
-            for (Operator childOperator : operator.getInputs()) {
-                collectScans(childOperator, scanList);
+            for (Operator child : operator.getInputs()) {
+                collectScans(child, scans);
             }
         }
     }
 
-    private Predicate findJoinPredicate(
-            Operator leftOperator,
-            Operator rightOperator,
-            Map<RelationPair, Predicate> joinPredicateMap
-    ) {
-        Set<String> leftAttributes = attributeNames(leftOperator.getOutput());
-        Set<String> rightAttributes = attributeNames(rightOperator.getOutput());
-        for (String leftAttribute : leftAttributes) {
-            for (String rightAttribute : rightAttributes) {
-                Predicate predicate = joinPredicateMap.get(new RelationPair(leftAttribute, rightAttribute));
+    private Predicate findJoinPredicate(Operator left, Operator right, Map<RelationPair, Predicate> joinMap) {
+        Set<String> leftAttrs = attributeNames(left.getOutput());
+        Set<String> rightAttrs = attributeNames(right.getOutput());
+
+        Predicate bestPredicate = null;
+        long bestSize = Long.MAX_VALUE;
+
+        for (String leftAttr : leftAttrs) {
+            for (String rightAttr : rightAttrs) {
+                Predicate predicate = joinMap.get(new RelationPair(leftAttr, rightAttr));
                 if (predicate != null) {
-                    return predicate;
+                    Relation leftRel = left.getOutput();
+                    Relation rightRel = right.getOutput();
+                    int Vleft = leftRel.getAttribute(new Attribute(leftAttr)).getValueCount();
+                    int Vright = rightRel.getAttribute(new Attribute(rightAttr)).getValueCount();
+                    long estimatedSize = (long) leftRel.getTupleCount() * rightRel.getTupleCount() / Math.max(1, Math.max(Vleft, Vright));
+
+                    if (estimatedSize < bestSize) {
+                        bestSize = estimatedSize;
+                        bestPredicate = predicate;
+                    }
                 }
             }
         }
-        return null;
+        return bestPredicate;
     }
 
     private Set<String> attributeNames(Relation relation) {
@@ -132,29 +139,28 @@ public class Optimiser {
     }
 
     private static class RelationPair {
-        private final String attributeOne;
-        private final String attributeTwo;
+        private final String attr1, attr2;
 
-        RelationPair(String attributeA, String attributeB) {
-            if (attributeA.compareTo(attributeB) <= 0) {
-                this.attributeOne = attributeA;
-                this.attributeTwo = attributeB;
+        RelationPair(String a, String b) {
+            if (a.compareTo(b) <= 0) {
+                this.attr1 = a;
+                this.attr2 = b;
             } else {
-                this.attributeOne = attributeB;
-                this.attributeTwo = attributeA;
+                this.attr1 = b;
+                this.attr2 = a;
             }
         }
 
         @Override
-        public boolean equals(Object object) {
-            if (!(object instanceof RelationPair)) return false;
-            RelationPair other = (RelationPair) object;
-            return attributeOne.equals(other.attributeOne) && attributeTwo.equals(other.attributeTwo);
+        public boolean equals(Object obj) {
+            if (!(obj instanceof RelationPair)) return false;
+            RelationPair other = (RelationPair) obj;
+            return attr1.equals(other.attr1) && attr2.equals(other.attr2);
         }
 
         @Override
         public int hashCode() {
-            return attributeOne.hashCode() * 31 + attributeTwo.hashCode();
+            return Objects.hash(attr1, attr2);
         }
     }
 }

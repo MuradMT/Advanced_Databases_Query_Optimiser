@@ -1,135 +1,129 @@
 package sjdb;
 
+import java.util.*;
 
 public class Estimator implements PlanVisitor {
-
-	private Relation outputRelation;
+	private Relation output;
 
 	public Relation getOutput() {
-		return outputRelation;
+		return output;
 	}
 
 	public Estimator() {
-
 	}
 
 	@Override
-	public void visit(Scan scan) {
-		Relation inputRelation = scan.getRelation();
-		Relation output = new Relation(inputRelation.getTupleCount());
-
-		for (Attribute attribute : inputRelation.getAttributes()) {
+	public void visit(Scan op) {
+		Relation input = op.getRelation();
+		Relation output = new Relation(input.getTupleCount());
+		for (Attribute attribute : input.getAttributes()) {
 			output.addAttribute(new Attribute(attribute));
 		}
-
-		scan.setOutput(output);
-		this.outputRelation = output;
+		op.setOutput(output);
+		this.output = output;
 	}
 
 	@Override
-	public void visit(Project project) {
-		Relation inputRelation = project.getInput().getOutput();
-		Relation output = new Relation(inputRelation.getTupleCount());
-
-		for (Attribute projectedAttribute : project.getAttributes()) {
-			Attribute inputAttribute = inputRelation.getAttribute(projectedAttribute);
-			int valueCount = Math.min(inputAttribute.getValueCount(), inputRelation.getTupleCount());
-			output.addAttribute(new Attribute(inputAttribute.getName(), valueCount));
+	public void visit(Project op) {
+		Relation input = op.getInput().getOutput();
+		int tupleCount = input.getTupleCount();
+		Relation output = new Relation(tupleCount);
+		for (Attribute keep : op.getAttributes()) {
+			Attribute inputAttr = input.getAttribute(keep);
+			int distinct = Math.min(inputAttr.getValueCount(), tupleCount);
+			output.addAttribute(new Attribute(inputAttr.getName(), distinct));
 		}
-
-		project.setOutput(output);
-		this.outputRelation = output;
+		op.setOutput(output);
+		this.output = output;
 	}
 
 	@Override
-	public void visit(Select select) {
-		Relation inputRelation = select.getInput().getOutput();
-		Predicate predicate = select.getPredicate();
-		int tupleCount = inputRelation.getTupleCount();
+	public void visit(Select op) {
+		Relation input = op.getInput().getOutput();
+		int tupleCount = input.getTupleCount();
+		Predicate predicate = op.getPredicate();
 
 		Relation output;
-
 		if (predicate.equalsValue()) {
-			Attribute attribute = predicate.getLeftAttribute();
-			int distinctValueCount = inputRelation.getAttribute(attribute).getValueCount();
-			int newTupleCount = tupleCount / Math.max(1, distinctValueCount);
+			Attribute attr = predicate.getLeftAttribute();
+			int valueCount = input.getAttribute(attr).getValueCount();
+			int newCount = tupleCount / Math.max(1, valueCount);
 
-			output = new Relation(newTupleCount);
-			for (Attribute attributeInRelation : inputRelation.getAttributes()) {
-				int valueCount = attributeInRelation.equals(attribute) ? 1 : Math.min(attributeInRelation.getValueCount(), newTupleCount);
-				output.addAttribute(new Attribute(attributeInRelation.getName(), valueCount));
+			output = new Relation(newCount);
+			for (Attribute attribute : input.getAttributes()) {
+				int distinct = attribute.equals(attr) ? 1 : Math.min(attribute.getValueCount(), newCount);
+				output.addAttribute(new Attribute(attribute.getName(), distinct));
 			}
-
 		} else {
-			Attribute leftAttribute = predicate.getLeftAttribute();
-			Attribute rightAttribute = predicate.getRightAttribute();
-			int leftDistinct = inputRelation.getAttribute(leftAttribute).getValueCount();
-			int rightDistinct = inputRelation.getAttribute(rightAttribute).getValueCount();
-			int maxDistinct = Math.max(leftDistinct, rightDistinct);
-			int newTupleCount = tupleCount / Math.max(1, maxDistinct);
-			int joinValueCount = Math.min(leftDistinct, rightDistinct);
+			Attribute leftAttr = predicate.getLeftAttribute();
+			Attribute rightAttr = predicate.getRightAttribute();
+			int leftCount = input.getAttribute(leftAttr).getValueCount();
+			int rightCount = input.getAttribute(rightAttr).getValueCount();
+			int maxCount = Math.max(leftCount, rightCount);
+			int newCount = tupleCount / Math.max(1, maxCount);
+			int minValueCount = Math.min(leftCount, rightCount);
 
-			output = new Relation(newTupleCount);
-			for (Attribute attributeInRelation : inputRelation.getAttributes()) {
-				int valueCount = (attributeInRelation.equals(leftAttribute) || attributeInRelation.equals(rightAttribute))
-						? joinValueCount
-						: Math.min(attributeInRelation.getValueCount(), newTupleCount);
-				output.addAttribute(new Attribute(attributeInRelation.getName(), valueCount));
+			output = new Relation(newCount);
+			for (Attribute attribute : input.getAttributes()) {
+				int distinct = (attribute.equals(leftAttr) || attribute.equals(rightAttr))
+						? minValueCount
+						: Math.min(attribute.getValueCount(), newCount);
+				output.addAttribute(new Attribute(attribute.getName(), distinct));
 			}
 		}
 
-		select.setOutput(output);
-		this.outputRelation = output;
+		op.setOutput(output);
+		this.output = output;
 	}
 
 	@Override
-	public void visit(Product product) {
-		Relation leftInput = product.getLeft().getOutput();
-		Relation rightInput = product.getRight().getOutput();
+	public void visit(Product op) {
+		Relation left = op.getLeft().getOutput();
+		Relation right = op.getRight().getOutput();
 
-		int newTupleCount = leftInput.getTupleCount() * rightInput.getTupleCount();
-		Relation output = new Relation(newTupleCount);
+		int newCount = left.getTupleCount() * right.getTupleCount();
+		Relation output = new Relation(newCount);
 
-		for (Attribute attribute : leftInput.getAttributes()) {
+		for (Attribute attribute : left.getAttributes()) {
 			output.addAttribute(new Attribute(attribute));
 		}
-		for (Attribute attribute : rightInput.getAttributes()) {
+		for (Attribute attribute : right.getAttributes()) {
 			output.addAttribute(new Attribute(attribute));
 		}
 
-		product.setOutput(output);
-		this.outputRelation = output;
+		op.setOutput(output);
+		this.output = output;
 	}
 
 	@Override
-	public void visit(Join join) {
-		join.getLeft().accept(this);
-		Relation leftRelation = this.outputRelation;
-		join.getRight().accept(this);
-		Relation rightRelation = this.outputRelation;
+	public void visit(Join op) {
+		op.getLeft().accept(this);
+		Relation left = this.output;
+		op.getRight().accept(this);
+		Relation right = this.output;
 
-		Attribute leftAttribute = join.getPredicate().getLeftAttribute();
-		Attribute rightAttribute = join.getPredicate().getRightAttribute();
-		int leftDistinct = leftRelation.getAttribute(leftAttribute).getValueCount();
-		int rightDistinct = rightRelation.getAttribute(rightAttribute).getValueCount();
+		Attribute leftAttr = op.getPredicate().getLeftAttribute();
+		Attribute rightAttr = op.getPredicate().getRightAttribute();
+		int leftCount = left.getAttribute(leftAttr).getValueCount();
+		int rightCount = right.getAttribute(rightAttr).getValueCount();
 
-		long leftTuples = leftRelation.getTupleCount();
-		long rightTuples = rightRelation.getTupleCount();
-		long denominator = Math.max(leftDistinct, rightDistinct);
-		long newTupleCount = (denominator == 0) ? 0 : (leftTuples * rightTuples) / denominator;
+		long tupleCountLeft = left.getTupleCount();
+		long tupleCountRight = right.getTupleCount();
+		long denominator = Math.max(leftCount, rightCount);
+		long newCount = denominator == 0 ? 0 : (tupleCountLeft * tupleCountRight) / denominator;
 
-		Relation output = new Relation((int) newTupleCount);
+		Relation output = new Relation((int)newCount);
 
-		for (Attribute attribute : leftRelation.getAttributes()) {
-			int valueCount = attribute.equals(leftAttribute) ? Math.min(leftDistinct, rightDistinct) : attribute.getValueCount();
-			output.addAttribute(new Attribute(attribute.getName(), valueCount));
+		for (Attribute attribute : left.getAttributes()) {
+			int distinct = attribute.equals(leftAttr) ? Math.min(leftCount, rightCount) : attribute.getValueCount();
+			output.addAttribute(new Attribute(attribute.getName(), distinct));
 		}
-		for (Attribute attribute : rightRelation.getAttributes()) {
-			int valueCount = attribute.equals(rightAttribute) ? Math.min(leftDistinct, rightDistinct) : attribute.getValueCount();
-			output.addAttribute(new Attribute(attribute.getName(), valueCount));
+		for (Attribute attribute : right.getAttributes()) {
+			int distinct = attribute.equals(rightAttr) ? Math.min(leftCount, rightCount) : attribute.getValueCount();
+			output.addAttribute(new Attribute(attribute.getName(), distinct));
 		}
 
-		join.setOutput(output);
-		this.outputRelation = output;
+		op.setOutput(output);
+		this.output = output;
 	}
 }
